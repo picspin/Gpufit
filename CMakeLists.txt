@@ -4,27 +4,17 @@
 
 # CMake
 
-cmake_minimum_required( VERSION 3.11 )
+cmake_minimum_required( VERSION 3.18 )
 set_property( GLOBAL PROPERTY USE_FOLDERS ON )
+cmake_policy(SET CMP0091 NEW)
 
 if( NOT PROJECT_NAME )
-  project( Gpufit VERSION 1.2.0 )
+  project( Gpufit VERSION 1.2.0 LANGUAGES CUDA CXX)
   include( CTest )
 endif()
 
 if( NOT CMAKE_CXX_STANDARD )
-	set( CMAKE_CXX_STANDARD 14 )
-endif()
-
-if( MSVC ) # link runtime statically with MSVC
-  foreach( type ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE} )
-    string( TOUPPER ${type} TYPE )
-    foreach( flags CMAKE_C_FLAGS_${TYPE} CMAKE_CXX_FLAGS_${TYPE} )
-      get_property( help CACHE ${flags} PROPERTY HELPSTRING )
-      string( REPLACE "/MD" "/MT" ${flags} "${${flags}}" )
-      set( ${flags} "${${flags}}" CACHE STRING "${help}" FORCE )
-    endforeach()
-  endforeach()
+	set( CMAKE_CXX_STANDARD 11 )
 endif()
 
 function( add_launcher target executable arguments working_directory )
@@ -51,11 +41,12 @@ set( DEFAULT_CUDA_ARCH All )
 set( DEFAULT_USE_CUBLAS OFF )
 
 # Set the default value for the precision
-set( DEFAULT_DOUBLE_PRECISION OFF )
+set( DEFAULT_DOUBLE_PRECISION ON )
+option( DOUBLE_PRECISION "WARNING: MEMORY INTENSIVE. Enable use of the double data type instead of float. Useful for n_fits >1 million." )
 
 # Precision
 
-#set( DOUBLE_PRECISION ${DEFAULT_DOUBLE_PRECISION} )
+# set( DOUBLE_PRECISION ${DEFAULT_DOUBLE_PRECISION} )
 
 if( DEFINED DOUBLE_PRECISION AND DOUBLE_PRECISION)
     add_definitions( -DGPUFIT_DOUBLE )
@@ -103,14 +94,14 @@ endif()
 
 # Python
 
-find_package( PythonInterp )
-if( PYTHONINTERP_FOUND )
+find_package( Python )
+if( Python_FOUND )
   function( add_python_launcher target )
     set( paths "${CMAKE_BINARY_DIR}/$(Configuration)" ${ARGN} )
     list( GET paths -1 working_directory )
     string( REPLACE ";" "')\nsys.path.append('" paths "${paths}" )
     set( arguments "-i -c \"import sys\nsys.path.append('${paths}')\"" )
-    add_launcher( ${target} "${PYTHON_EXECUTABLE}" "${arguments}" "${working_directory}" )
+    add_launcher( ${target} "${Python_EXECUTABLE}" "${arguments}" "${working_directory}" )
   endfunction()
 endif()
 
@@ -144,6 +135,14 @@ add_subdirectory( Gpufit )
 
 add_subdirectory( examples/c++/gpu_vs_cpu_profiling )
 
+
+# link runtime statically with MSVC
+set_property(TARGET Gpufit PROPERTY
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_property(TARGET Cpufit PROPERTY
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+
 # Launcher
 #
 # Uses the following variables:
@@ -173,7 +172,7 @@ if( Matlab_FOUND )
   endif()
 endif()
 
-if( PYTHONINTERP_FOUND )
+if( Python_FOUND )
   set( Python_WORKING_DIRECTORY "${home}" CACHE PATH "Python working directory" )
   if( Python_WORKING_DIRECTORY )
     add_custom_target( RUN_PYTHON )

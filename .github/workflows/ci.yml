@@ -5,37 +5,85 @@ on:
   pull_request:
       branches:
         - master
+        - dev
+
   workflow_dispatch:
 
 jobs:
   build:
+    name: ${{ matrix.os }} cuda-${{ matrix.cuda }} python-${{ matrix.python }} ${{ matrix.visual_studio }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # explicit include-based build matrix of known valid options
       matrix:
-        # `include` will only run specific combinations (not permutations of these)
         include:
+          # Windows2019 & VS 2019 supports cuda 10.1+
+#           - os: windows-2019
+#             cuda: "10.1.243"
+#             cuda-major: "10"
+#             cuda-minor: "1"
+#             visual_studio: "Visual Studio 16 2019"
+#             python: "3.9"
+          - os: windows-2019
+            cuda: "11.3.1"
+            cuda-major: "11"
+            cuda-minor: "3"
+            visual_studio: "Visual Studio 16 2019"
+            python: "3.9"
           - os: windows-2019
             cuda: "11.4.0"
+            cuda-major: "11"
+            cuda-minor: "4"
+            visual_studio: "Visual Studio 16 2019"
+            python: "3.9"
+          - os: windows-2019
+            cuda: "11.7.0"
+            cuda-major: "11"
+            cuda-minor: "7"
             visual_studio: "Visual Studio 16 2019"
             python: "3.9"
           - os: ubuntu-20.04
+            cuda: "11.3.1"
+            python: "3.8"
+          - os: ubuntu-20.04
             cuda: "11.4.0"
-            python: "3.9"
+            python: "3.8"
+          - os: ubuntu-20.04
+            cuda: "11.7.0"
+            python: "3.8"
+          - os: ubuntu-22.04
+            cuda: "11.7.0"
+            python: "3.10"
+
 
     env:
       build_dir: "build"
       config: "Release"
+      gpufit_version: "1.2.0"
 
     steps:
       - uses: actions/checkout@v3
 
       - name: Cache build
         uses: actions/cache@v3
+        id: cache-cuda
         with:
-          path: ${{github.workspace}}/build
-          key: ${{ matrix.os }}-build
-          restore-keys: ${{ matrix.os }}-build
+          path: |
+            C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA*
+          key: ${{ matrix.os }}-${{ matrix.cuda }}
+          restore-keys: ${{ matrix.os }}-${{ matrix.cuda }}
+          
+      - name: Add cache hit to PATH (Windows)
+        if: runner.os == 'Windows' && steps.cache-cuda.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          echo "CUDA_PATH=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v${{ matrix.cuda-major }}.${{ matrix.cuda-minor }}" >> $GITHUB_ENV
+          echo "CUDA_PATH_V${{ matrix.cuda-major }}_${{ matrix.cuda-minor }}=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v${{ matrix.cuda-major }}.${{ matrix.cuda-minor }}" >> $GITHUB_ENV
+          echo "CUDA_PATH_VX_Y=CUDA_PATH_V${{ matrix.cuda-major }}_${{ matrix.cuda-minor }}" >> $GITHUB_ENV
+          echo "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v${{ matrix.cuda-major }}.${{ matrix.cuda-minor }}\\bin" >> $GITHUB_PATH
+          cp -R "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v${{ matrix.cuda-major }}.${{ matrix.cuda-minor }}\\extras\\visual_studio_integration\\MSBuildExtensions\\." "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Microsoft\VC\v160\BuildCustomizations"
+
 
       - name: Setup Python ${{ matrix.python }}
         uses: actions/setup-python@v4
@@ -47,24 +95,51 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install wheel
-
-      - name: Install CUDA (Windows)
-        uses: Jimver/cuda-toolkit@v0.2.8
+          
+      - name: Setup MATLAB
+        uses: matlab-actions/setup-matlab@v1.2.3
+        
+      - name: Download and install Boost (Windows)
+        uses: MarkusJx/install-boost@v2.4.3
         if: runner.os == 'Windows'
+        id: install-boost-w
+        with:
+            # REQUIRED: Specify the required boost version
+            # A list of supported versions can be found here:
+            # https://github.com/MarkusJx/prebuilt-boost/blob/main/versions-manifest.json
+            boost_version: 1.81.0
+            platform_version: 2019
+
+      - name: Download and install Boost (Linux)
+        uses: MarkusJx/install-boost@v2.4.3
+        if: runner.os == 'Linux'
+        id: install-boost-l
+        with:
+            # REQUIRED: Specify the required boost version
+            # A list of supported versions can be found here:
+            # https://github.com/MarkusJx/prebuilt-boost/blob/main/versions-manifest.json
+            boost_version: 1.81.0
+            platform_version: 20.04
+        
+      - name: Install CUDA if not cached (Windows)
+        uses: Jimver/cuda-toolkit@v0.2.8
+        id: cuda-toolkit-w
+        if: runner.os == 'Windows' && steps.cache-cuda.outputs.cache-hit != 'true'
+
         with:
           sub-packages: '["nvcc", "visual_studio_integration", "cublas", "curand", "nvrtc", "cudart"]'
           cuda: ${{ matrix.cuda }}
           method: network
-          use-github-cache: false
 
       - name: Install CUDA (Linux)
         uses: Jimver/cuda-toolkit@v0.2.8
-        if: runner.os == 'Linux'
+        id: cuda-toolkit-l
+        if: runner.os == 'Linux' && steps.cache-cuda.outputs.cache-hit != 'true'
+
         with:
           sub-packages: '["nvcc", "nvrtc", "cudart"]'
           cuda: ${{ matrix.cuda }}
           method: network
-          use-github-cache: false
 
       - name: nvcc check
         shell: bash
@@ -78,16 +153,27 @@ jobs:
         shell: bash
         run: cmake --version
 
-      - name: Configure CMake
-        id: configure
+      - name: Configure CMake (Windows)
+        id: configure-w
         shell: bash
+        env:
+          BOOST_ROOT: ${{ steps.install-boost-w.outputs.BOOST_ROOT }}
+        if: runner.os == 'Windows'
         run: |
-          if [ "${{ runner.os }}" -eq "Windows" ]
-          then
-            cmake . -B "${{ env.build_dir }}" -G "${{ matrix.visual_studio }}" -A x64
-          else
-            cmake . -B "${{ env.build_dir }}" -DCMAKE_BUILD_TYPE=RELEASE
-          fi
+          rm -f ${{ env.build_dir }}/CMakeCache.txt
+          cmake . -B "${{ env.build_dir }}" -G "${{ matrix.visual_studio }}" -A x64 -DCMAKE_GENERATOR_TOOLSET="cuda=${{steps.cuda-toolkit-w.outputs.CUDA_PATH}}"
+        
+
+      - name: Configure CMake (Linux)
+        id: configure-l
+        shell: bash
+        env:
+          BOOST_ROOT: ${{ steps.install-boost-l.outputs.BOOST_ROOT }}
+        if: runner.os == 'Linux'
+        run: |
+          rm -f ${{ env.build_dir }}/CMakeCache.txt
+          cmake . -B "${{ env.build_dir }}" -DCMAKE_BUILD_TYPE=RELEASE
+        
 
       - name: Configure Error Processing
         if: ${{ (failure() && steps.configure.outcome == 'failure') || success() }}
@@ -109,11 +195,23 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: ${{ env.build_dir }}
         run: cmake --build . --config ${{ env.config }} --target ALL_BUILD --verbose
+        env:
+          BOOST_ROOT: ${{ steps.install-boost-w.outputs.BOOST_ROOT }}
+
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ env.build_dir }}
         run: make
+        env:
+          BOOST_ROOT: ${{ steps.install-boost-l.outputs.BOOST_ROOT }}
+          
+#       - name: Performance tests
+#         working-directory: ${{ env.build_dir }}
+#         run:  |
+#             ./Gpufit_Cpufit_Performance_Comparison
+#             ./Gpufit_Cpufit_Patlak
+##             ./Patlak_Fitting_Comparison
 
       - name: Upload Artifacts (Windows)
         uses: actions/upload-artifact@v3
